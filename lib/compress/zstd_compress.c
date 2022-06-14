@@ -4219,7 +4219,7 @@ static size_t ZSTD_loadDictionaryContent(ZSTD_matchState_t* ms,
          * Dictionaries right at the edge will immediately trigger overflow
          * correction, but I don't want to insert extra constraints here.
          */
-        U32 const maxDictSize = ZSTD_CURRENT_MAX - 1;
+        U32 const maxDictSize = ZSTD_CURRENT_MAX - ZSTD_WINDOW_START_INDEX;
         /* We must have cleared our windows when our source is this large. */
         assert(ZSTD_window_isEmpty(ms->window));
         if (loadLdmDict)
@@ -5873,7 +5873,7 @@ ZSTD_copySequencesToSeqStoreExplicitBlockDelim(ZSTD_CCtx* cctx,
         dictSize = 0;
     }
     ZSTD_memcpy(updatedRepcodes.rep, cctx->blockState.prevCBlock->rep, sizeof(repcodes_t));
-    for (; (inSeqs[idx].matchLength != 0 || inSeqs[idx].offset != 0) && idx < inSeqsSize; ++idx) {
+    for (; idx < inSeqsSize && (inSeqs[idx].matchLength != 0 || inSeqs[idx].offset != 0); ++idx) {
         U32 const litLength = inSeqs[idx].litLength;
         U32 const ll0 = (litLength == 0);
         U32 const matchLength = inSeqs[idx].matchLength;
