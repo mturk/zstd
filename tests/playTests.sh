@@ -317,7 +317,7 @@ zstd -d -f tmp_corrupt.zst --no-check
 zstd -d -f tmp_corrupt.zst --check --no-check # final flag overrides
 zstd -d -f tmp.zst --no-check
 
-if [ "$isWindows" = false ]; then
+if [ "$isWindows" = false ] && [ "$UNAME" != "AIX" ]; then
   if [ -n "$(which readelf)" ]; then
     println "test: check if binary has executable stack (#2963)"
     readelf -lW "$ZSTD_BIN" | grep 'GNU_STACK .* RW ' || die "zstd binary has executable stack!"
@@ -418,8 +418,11 @@ println "\n===>  decompression only tests "
 dd bs=1048576 count=1 if=/dev/zero of=tmp
 zstd -d -o tmp1 "$TESTDIR/golden-decompression/rle-first-block.zst"
 $DIFF -s tmp1 tmp
-rm -f tmp*
 
+touch tmp_empty
+zstd -d -o tmp2 "$TESTDIR/golden-decompression/empty-block.zst"
+$DIFF -s tmp2 tmp_empty
+rm -f tmp*
 
 println "\n===>  compress multiple files"
 println hello > tmp1
@@ -805,6 +808,16 @@ println "Hello world 1!" | zstd -df
 println "Hello world 2!" | zstd -dcf
 println "Hello world 3!" > tmp1
 zstd -dcf tmp1
+println "" | zstd -df > tmp1
+println "" > tmp2
+$DIFF -q tmp1 tmp2
+println "1" | zstd -df > tmp1
+println "1" > tmp2
+$DIFF -q tmp1 tmp2
+println "12" | zstd -df > tmp1
+println "12" > tmp2
+$DIFF -q tmp1 tmp2
+rm -rf tmp*
 
 
 println "\n===>  frame concatenation "
