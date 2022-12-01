@@ -1974,8 +1974,9 @@ static int fuzzerTests(U32 seed, unsigned nbTests, unsigned startTest, double co
         /* multi-segments compression test */
         XXH64_reset(&xxhState, 0);
         {   ZSTD_outBuffer outBuff = { cBuffer, cBufferSize, 0 } ;
-            U32 n;
-            for (n=0, cSize=0, totalTestSize=0 ; totalTestSize < maxTestSize ; n++) {
+            cSize=0;
+            totalTestSize=0;
+            while(totalTestSize < maxTestSize) {
                 /* compress random chunks into randomly sized dst buffers */
                 {   size_t const randomSrcSize = FUZ_randomLength(&lseed, maxSampleLog);
                     size_t const srcSize = MIN(maxTestSize-totalTestSize, randomSrcSize);
@@ -2280,7 +2281,7 @@ static int fuzzerTests_newAPI(U32 seed, int nbTests, int startTest,
 
                 /* mess with long distance matching parameters */
                 if (bigTests) {
-                    if (FUZ_rand(&lseed) & 1) CHECK_Z( setCCtxParameter(zc, cctxParams, ZSTD_c_enableLongDistanceMatching, FUZ_rand(&lseed) & 63, opaqueAPI) );
+                    if (FUZ_rand(&lseed) & 1) CHECK_Z( setCCtxParameter(zc, cctxParams, ZSTD_c_enableLongDistanceMatching, FUZ_randomClampedLength(&lseed, ZSTD_ps_auto, ZSTD_ps_disable), opaqueAPI) );
                     if (FUZ_rand(&lseed) & 3) CHECK_Z( setCCtxParameter(zc, cctxParams, ZSTD_c_ldmHashLog, FUZ_randomClampedLength(&lseed, ZSTD_HASHLOG_MIN, 23), opaqueAPI) );
                     if (FUZ_rand(&lseed) & 3) CHECK_Z( setCCtxParameter(zc, cctxParams, ZSTD_c_ldmMinMatch, FUZ_randomClampedLength(&lseed, ZSTD_LDM_MINMATCH_MIN, ZSTD_LDM_MINMATCH_MAX), opaqueAPI) );
                     if (FUZ_rand(&lseed) & 3) CHECK_Z( setCCtxParameter(zc, cctxParams, ZSTD_c_ldmBucketSizeLog, FUZ_randomClampedLength(&lseed, ZSTD_LDM_BUCKETSIZELOG_MIN, ZSTD_LDM_BUCKETSIZELOG_MAX), opaqueAPI) );

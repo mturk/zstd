@@ -216,7 +216,6 @@ static void usage_advanced(const char* programName)
     DISPLAYOUT("\n");
     DISPLAYOUT("Advanced compression options :\n");
     DISPLAYOUT("     --ultra           enable levels beyond %i, up to %i (requires more memory)\n", ZSTDCLI_CLEVEL_MAX, ZSTD_maxCLevel());
-    DISPLAYOUT("     --long[=#]        enable long distance matching with given window log (default: %u)\n", g_defaultMaxWindowLog);
     DISPLAYOUT("     --fast[=#]        switch to very fast compression levels (default: %u)\n", 1);
 #ifdef ZSTD_GZCOMPRESS
     if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
@@ -224,9 +223,9 @@ static void usage_advanced(const char* programName)
         DISPLAYOUT("     --no-name         do not store original filename when compressing\n");
     }
 #endif
-    DISPLAYOUT("     --adapt           dynamically adapt compression level to I/O conditions\n");
-    DISPLAYOUT("     --[no-]row-match-finder :  force enable/disable usage of fast row-based matchfinder for greedy, lazy, and lazy2 strategies\n");
+    DISPLAYOUT("     --long[=#]        enable long distance matching with given window log (default: %u)\n", g_defaultMaxWindowLog);
     DISPLAYOUT("     --patch-from=FILE :  specify the file to be used as a reference point for zstd's diff engine. \n");
+    DISPLAYOUT("     --adapt           dynamically adapt compression level to I/O conditions\n");
 # ifdef ZSTD_MULTITHREAD
     DISPLAYOUT("  -T#                  spawn # compression threads (default: 1, 0==# cores) \n");
     DISPLAYOUT("  -B#                  select size of each job (default: 0==automatic) \n");
@@ -240,6 +239,7 @@ static void usage_advanced(const char* programName)
     DISPLAYOUT("     --target-compressed-block-size=# :  generate compressed block of approximately targeted size \n");
     DISPLAYOUT("     --no-dictID       don't write dictID into header (dictionary compression only)\n");
     DISPLAYOUT("     --[no-]compress-literals :  force (un)compressed literals\n");
+    DISPLAYOUT("     --[no-]row-match-finder :  force enable/disable usage of fast row-based matchfinder for greedy, lazy, and lazy2 strategies\n");
 
     DISPLAYOUT("     --format=zstd     compress files to the .zst format (default)\n");
 #ifdef ZSTD_GZCOMPRESS
@@ -786,6 +786,18 @@ static unsigned init_nbThreads(void) {
     const char* __nb;             \
     NEXT_FIELD(__nb);             \
     val32 = readU32FromChar(&__nb); \
+    if(*__nb != 0) {         \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
+    }                             \
+}
+
+#define NEXT_TSIZE(valTsize) {      \
+    const char* __nb;             \
+    NEXT_FIELD(__nb);             \
+    valTsize = readSizeTFromChar(&__nb); \
+    if(*__nb != 0) {         \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
+    }                             \
 }
 
 typedef enum { zom_compress, zom_decompress, zom_test, zom_bench, zom_train, zom_list } zstd_operation_mode;
@@ -1016,13 +1028,13 @@ int main(int argCount, const char* argv[])
                 if (longCommandWArg(&argument, "--memlimit")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memory")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memlimit-decompress")) { NEXT_UINT32(memLimit); continue; }
-                if (longCommandWArg(&argument, "--block-size=")) { blockSize = readSizeTFromChar(&argument); continue; }
+                if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(blockSize); continue; }
                 if (longCommandWArg(&argument, "--maxdict")) { NEXT_UINT32(maxDictSize); continue; }
                 if (longCommandWArg(&argument, "--dictID")) { NEXT_UINT32(dictID); continue; }
                 if (longCommandWArg(&argument, "--zstd=")) { if (!parseCompressionParameters(argument, &compressionParams)) { badusage(programName); CLEAN_RETURN(1); } continue; }
-                if (longCommandWArg(&argument, "--stream-size=")) { streamSrcSize = readSizeTFromChar(&argument); continue; }
-                if (longCommandWArg(&argument, "--target-compressed-block-size=")) { targetCBlockSize = readSizeTFromChar(&argument); continue; }
-                if (longCommandWArg(&argument, "--size-hint=")) { srcSizeHint = readSizeTFromChar(&argument); continue; }
+                if (longCommandWArg(&argument, "--stream-size")) { NEXT_TSIZE(streamSrcSize); continue; }
+                if (longCommandWArg(&argument, "--target-compressed-block-size")) { NEXT_TSIZE(targetCBlockSize); continue; }
+                if (longCommandWArg(&argument, "--size-hint")) { NEXT_TSIZE(srcSizeHint); continue; }
                 if (longCommandWArg(&argument, "--output-dir-flat")) {
                     NEXT_FIELD(outDirName);
                     if (strlen(outDirName) == 0) {
