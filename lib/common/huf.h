@@ -1,7 +1,7 @@
 /* ******************************************************************
  * huff0 huffman codec,
  * part of Finite State Entropy library
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * You can contact the author at :
  * - Source repository : https://github.com/Cyan4973/FiniteStateEntropy
@@ -88,8 +88,10 @@ HUF_PUBLIC_API size_t HUF_compress2 (void* dst, size_t dstCapacity,
                                unsigned maxSymbolValue, unsigned tableLog);
 
 /** HUF_compress4X_wksp() :
- *  Same as HUF_compress2(), but uses externally allocated `workSpace`.
- * `workspace` must be at least as large as HUF_WORKSPACE_SIZE */
+ *  Same as HUF_compress2(), but uses externally allocated @workSpace.
+ * @workSpace's size, aka @wkspSize, must be >= HUF_WORKSPACE_SIZE
+ * @srcSize must be >= 6
+ */
 #define HUF_WORKSPACE_SIZE ((8 << 10) + 512 /* sorting scratch space */)
 #define HUF_WORKSPACE_SIZE_U64 (HUF_WORKSPACE_SIZE / sizeof(U64))
 HUF_PUBLIC_API size_t HUF_compress4X_wksp (void* dst, size_t dstCapacity,
@@ -219,7 +221,7 @@ size_t HUF_compress4X_repeat(void* dst, size_t dstSize,
                        unsigned maxSymbolValue, unsigned tableLog,
                        void* workSpace, size_t wkspSize,    /**< `workSpace` must be aligned on 4-bytes boundaries, `wkspSize` must be >= HUF_WORKSPACE_SIZE */
                        HUF_CElt* hufTable, HUF_repeat* repeat, int preferRepeat, int bmi2,
-                       unsigned suspectUncompressible, HUF_depth_mode depthMode);
+                       int suspectUncompressible, HUF_depth_mode depthMode);
 
 /** HUF_buildCTable_wksp() :
  *  Same as HUF_buildCTable(), but using externally allocated scratch buffer.
@@ -326,7 +328,7 @@ size_t HUF_compress1X_repeat(void* dst, size_t dstSize,
                        unsigned maxSymbolValue, unsigned tableLog,
                        void* workSpace, size_t wkspSize,   /**< `workSpace` must be aligned on 4-bytes boundaries, `wkspSize` must be >= HUF_WORKSPACE_SIZE */
                        HUF_CElt* hufTable, HUF_repeat* repeat, int preferRepeat, int bmi2,
-                       unsigned suspectUncompressible, HUF_depth_mode depthMode);
+                       int suspectUncompressible, HUF_depth_mode depthMode);
 
 size_t HUF_decompress1X1 (void* dst, size_t dstSize, const void* cSrc, size_t cSrcSize);   /* single-symbol decoder */
 #ifndef HUF_FORCE_DECOMPRESS_X1

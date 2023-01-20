@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -25,6 +25,7 @@
 #include <stdlib.h>       /* free */
 #include <stdio.h>        /* fgets, sscanf */
 #include <string.h>       /* strcmp */
+#include <time.h>         /* time_t, time(), to randomize seed */
 #include <assert.h>       /* assert */
 #include "timefn.h"       /* UTIL_time_t, UTIL_getTime */
 #include "mem.h"
@@ -39,7 +40,7 @@
 #include "seqgen.h"
 #include "util.h"
 #include "timefn.h"       /* UTIL_time_t, UTIL_clockSpanMicro, UTIL_getTime */
-
+#include "external_matchfinder.h"   /* zstreamExternalMatchFinder, EMF_testCase */
 
 /*-************************************
  *  Constants
@@ -1831,6 +1832,237 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
         CHECK_Z(ZSTD_decompress_usingDict(zd, decodedBuffer, CNBufferSize, out.dst, out.pos, dictionary.start, dictionary.filled));
 
         ZSTD_freeCDict(cdict);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+    DISPLAYLEVEL(3, "test%3i : External matchfinder API: ", testNb++);
+    {
+        size_t const dstBufSize = ZSTD_compressBound(CNBufferSize);
+        BYTE* const dstBuf = (BYTE*)malloc(ZSTD_compressBound(dstBufSize));
+        size_t const checkBufSize = CNBufferSize;
+        BYTE* const checkBuf = (BYTE*)malloc(checkBufSize);
+        int enableFallback;
+        EMF_testCase externalMatchState;
+
+        CHECK(dstBuf == NULL || checkBuf == NULL, "allocation failed");
+
+        CHECK_Z(ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters));
+
+        /* Reference external matchfinder outside the test loop to
+         * check that the reference is preserved across compressions */
+        ZSTD_registerExternalMatchFinder(zc, &externalMatchState, zstreamExternalMatchFinder);
+
+        for (enableFallback = 0; enableFallback < 1; enableFallback++) {
+            size_t testCaseId;
+
+            EMF_testCase const EMF_successCases[] = {
+                EMF_ONE_BIG_SEQ,
+                EMF_LOTS_OF_SEQS,
+            };
+            size_t const EMF_numSuccessCases = 2;
+
+            EMF_testCase const EMF_failureCases[] = {
+                EMF_ZERO_SEQS,
+                EMF_BIG_ERROR,
+                EMF_SMALL_ERROR,
+            };
+            size_t const EMF_numFailureCases = 3;
+
+            /* Test external matchfinder success scenarios */
+            for (testCaseId = 0; testCaseId < EMF_numSuccessCases; testCaseId++) {
+                size_t res;
+                externalMatchState = EMF_successCases[testCaseId];
+                ZSTD_CCtx_reset(zc, ZSTD_reset_session_only);
+                CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, enableFallback));
+                res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize);
+                CHECK(ZSTD_isError(res), "EMF: Compression error: %s", ZSTD_getErrorName(res));
+                CHECK_Z(ZSTD_decompress(checkBuf, checkBufSize, dstBuf, res));
+                CHECK(memcmp(CNBuffer, checkBuf, CNBufferSize) != 0, "EMF: Corruption!");
+            }
+
+            /* Test external matchfinder failure scenarios */
+            for (testCaseId = 0; testCaseId < EMF_numFailureCases; testCaseId++) {
+                size_t res;
+                externalMatchState = EMF_failureCases[testCaseId];
+                ZSTD_CCtx_reset(zc, ZSTD_reset_session_only);
+                CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, enableFallback));
+                res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize);
+                if (enableFallback) {
+                    CHECK_Z(ZSTD_decompress(checkBuf, checkBufSize, dstBuf, res));
+                    CHECK(memcmp(CNBuffer, checkBuf, CNBufferSize) != 0, "EMF: Corruption!");
+                } else {
+                    CHECK(!ZSTD_isError(res), "EMF: Should have raised an error!");
+                    CHECK(
+                        ZSTD_getErrorCode(res) != ZSTD_error_externalMatchFinder_failed,
+                        "EMF: Wrong error code: %s", ZSTD_getErrorName(res)
+                    );
+                }
+            }
+
+            /* Test compression with external matchfinder + empty src buffer */
+            {
+                size_t res;
+                externalMatchState = EMF_ZERO_SEQS;
+                ZSTD_CCtx_reset(zc, ZSTD_reset_session_only);
+                CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, enableFallback));
+                res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, 0);
+                CHECK(ZSTD_isError(res), "EMF: Compression error: %s", ZSTD_getErrorName(res));
+                CHECK(ZSTD_decompress(checkBuf, checkBufSize, dstBuf, res) != 0, "EMF: Empty src round trip failed!");
+            }
+        }
+
+        /* Test that reset clears the external matchfinder */
+        CHECK_Z(ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters));
+        externalMatchState = EMF_BIG_ERROR; /* ensure zstd will fail if the matchfinder wasn't cleared */
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, 0));
+        CHECK_Z(ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize));
+
+        /* Test that registering mFinder == NULL clears the external matchfinder */
+        ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters);
+        ZSTD_registerExternalMatchFinder(zc, &externalMatchState, zstreamExternalMatchFinder);
+        externalMatchState = EMF_BIG_ERROR; /* ensure zstd will fail if the matchfinder wasn't cleared */
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, 0));
+        ZSTD_registerExternalMatchFinder(zc, NULL, NULL); /* clear the external matchfinder */
+        CHECK_Z(ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize));
+
+        /* Test that external matchfinder doesn't interact with older APIs */
+        ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters);
+        ZSTD_registerExternalMatchFinder(zc, &externalMatchState, zstreamExternalMatchFinder);
+        externalMatchState = EMF_BIG_ERROR; /* ensure zstd will fail if the matchfinder is used */
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, 0));
+        CHECK_Z(ZSTD_compressCCtx(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize, 3));
+
+        /* Test that compression returns the correct error with LDM */
+        CHECK_Z(ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters));
+        {
+            size_t res;
+            ZSTD_registerExternalMatchFinder(zc, &externalMatchState, zstreamExternalMatchFinder);
+            CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableLongDistanceMatching, ZSTD_ps_enable));
+            res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize);
+            CHECK(!ZSTD_isError(res), "EMF: Should have raised an error!");
+            CHECK(
+                ZSTD_getErrorCode(res) != ZSTD_error_parameter_combination_unsupported,
+                "EMF: Wrong error code: %s", ZSTD_getErrorName(res)
+            );
+        }
+
+#ifdef ZSTD_MULTITHREAD
+        /* Test that compression returns the correct error with nbWorkers > 0 */
+        CHECK_Z(ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters));
+        {
+            size_t res;
+            ZSTD_registerExternalMatchFinder(zc, &externalMatchState, zstreamExternalMatchFinder);
+            CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_nbWorkers, 1));
+            res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize);
+            CHECK(!ZSTD_isError(res), "EMF: Should have raised an error!");
+            CHECK(
+                ZSTD_getErrorCode(res) != ZSTD_error_parameter_combination_unsupported,
+                "EMF: Wrong error code: %s", ZSTD_getErrorName(res)
+            );
+        }
+#endif
+
+        free(dstBuf);
+        free(checkBuf);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+
+    /* Test maxBlockSize cctx param functionality */
+    DISPLAYLEVEL(3, "test%3i : Testing maxBlockSize PR#3418: ", testNb++);
+    {
+        ZSTD_CCtx* cctx = ZSTD_createCCtx();
+
+        /* Quick test to make sure maxBlockSize bounds are enforced */
+        assert(ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, ZSTD_BLOCKSIZE_MAX_MIN - 1)));
+        assert(ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, ZSTD_BLOCKSIZE_MAX + 1)));
+
+        /* Test maxBlockSize < windowSize and windowSize < maxBlockSize*/
+        {
+            size_t srcSize = 2 << 10;
+            void* const src = CNBuffer;
+            size_t dstSize = ZSTD_compressBound(srcSize);
+            void* const dst1 = compressedBuffer;
+            void* const dst2 = (BYTE*)compressedBuffer + dstSize;
+            size_t size1, size2;
+            void* const checkBuf = malloc(srcSize);
+            memset(src, 'x', srcSize);
+
+            /* maxBlockSize = 1KB */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, 1u << 10));
+            size1 = ZSTD_compress2(cctx, dst1, dstSize, src, srcSize);
+
+            if (ZSTD_isError(size1)) goto _output_error;
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst1, size1));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            /* maxBlockSize = 3KB */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, 3u << 10));
+            size2 = ZSTD_compress2(cctx, dst2, dstSize, src, srcSize);
+
+            if (ZSTD_isError(size2)) goto _output_error;
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst2, size2));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            assert(size1 - size2 == 4); /* We add another RLE block with header + character */
+            assert(memcmp(dst1, dst2, size2) != 0); /* Compressed output should not be equal */
+
+            /* maxBlockSize = 1KB, windowLog = 10 */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, 1u << 10));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 10));
+            size1 = ZSTD_compress2(cctx, dst1, dstSize, src, srcSize);
+
+            if (ZSTD_isError(size1)) goto _output_error;
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst1, size1));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            /* maxBlockSize = 3KB, windowLog = 10 */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, 3u << 10));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 10));
+            size2 = ZSTD_compress2(cctx, dst2, dstSize, src, srcSize);
+
+            if (ZSTD_isError(size2)) goto _output_error;
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst2, size2));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            assert(size1 == size2);
+            assert(memcmp(dst1, dst2, size1) == 0); /* Compressed output should be equal */
+
+            free(checkBuf);
+        }
+
+        ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters);
+
+        /* Test maxBlockSize = 0 is valid */
+        {   size_t srcSize = 256 << 10;
+            void* const src = CNBuffer;
+            size_t dstSize = ZSTD_compressBound(srcSize);
+            void* const dst1 = compressedBuffer;
+            void* const dst2 = (BYTE*)compressedBuffer + dstSize;
+            size_t size1, size2;
+            void* const checkBuf = malloc(srcSize);
+
+            /* maxBlockSize = 0 */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, 0));
+            size1 = ZSTD_compress2(cctx, dst1, dstSize, src, srcSize);
+
+            if (ZSTD_isError(size1)) goto _output_error;
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst1, size1));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            /* maxBlockSize = ZSTD_BLOCKSIZE_MAX */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_maxBlockSize, ZSTD_BLOCKSIZE_MAX));
+            size2 = ZSTD_compress2(cctx, dst2, dstSize, src, srcSize);
+
+            if (ZSTD_isError(size2)) goto _output_error;
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst2, size2));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            assert(size1 == size2);
+            assert(memcmp(dst1, dst2, size1) == 0); /* Compressed output should be equal */
+            free(checkBuf);
+        }
+        ZSTD_freeCCtx(cctx);
     }
     DISPLAYLEVEL(3, "OK \n");
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -26,9 +26,14 @@ static void set(ZSTD_CCtx *cctx, ZSTD_cParameter param, int value)
     FUZZ_ZASSERT(ZSTD_CCtx_setParameter(cctx, param, value));
 }
 
+static unsigned produceParamValue(unsigned min, unsigned max,
+                                  FUZZ_dataProducer_t *producer) {
+    return FUZZ_dataProducer_uint32Range(producer, min, max);
+}
+
 static void setRand(ZSTD_CCtx *cctx, ZSTD_cParameter param, unsigned min,
                     unsigned max, FUZZ_dataProducer_t *producer) {
-    unsigned const value = FUZZ_dataProducer_uint32Range(producer, min, max);
+    unsigned const value = produceParamValue(min, max, producer);
     set(cctx, param, value);
 }
 
@@ -90,8 +95,14 @@ void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer
             ZSTD_LDM_HASHRATELOG_MAX, producer);
     /* Set misc parameters */
 #ifndef ZSTD_MULTITHREAD
-    setRand(cctx, ZSTD_c_nbWorkers, 0, 0, producer);
-    setRand(cctx, ZSTD_c_rsyncable, 0, 0, producer);
+    // To reproduce with or without ZSTD_MULTITHREAD, we are going to use
+    // the same amount of entropy.
+    unsigned const nbWorkers_value = produceParamValue(0, 2, producer);
+    unsigned const rsyncable_value = produceParamValue(0, 1, producer);
+    (void)nbWorkers_value;
+    (void)rsyncable_value;
+    set(cctx, ZSTD_c_nbWorkers, 0);
+    set(cctx, ZSTD_c_rsyncable, 0);
 #else
     setRand(cctx, ZSTD_c_nbWorkers, 0, 2, producer);
     setRand(cctx, ZSTD_c_rsyncable, 0, 1, producer);
@@ -104,6 +115,7 @@ void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer
     setRand(cctx, ZSTD_c_useBlockSplitter, 0, 2, producer);
     setRand(cctx, ZSTD_c_deterministicRefPrefix, 0, 1, producer);
     setRand(cctx, ZSTD_c_prefetchCDictTables, 0, 2, producer);
+    setRand(cctx, ZSTD_c_maxBlockSize, ZSTD_BLOCKSIZE_MAX_MIN, ZSTD_BLOCKSIZE_MAX, producer);
     if (FUZZ_dataProducer_uint32Range(producer, 0, 1) == 0) {
       setRand(cctx, ZSTD_c_srcSizeHint, ZSTD_SRCSIZEHINT_MIN, 2 * srcSize, producer);
     }

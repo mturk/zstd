@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -28,6 +28,7 @@
 #include <stdio.h>      /* fprintf, open, fdopen, fread, _fileno, stdin, stdout */
 #include <stdlib.h>     /* malloc, free */
 #include <string.h>     /* strcmp, strlen */
+#include <time.h>       /* clock_t, to measure process time */
 #include <fcntl.h>      /* O_WRONLY */
 #include <assert.h>
 #include <errno.h>      /* errno */
@@ -1059,12 +1060,12 @@ FIO_compressGzFrame(const cRess_t* ress,  /* buffers & handlers are used, but no
             DISPLAYUPDATE_PROGRESS(
                     "\rRead : %u MB ==> %.2f%% ",
                     (unsigned)(inFileSize>>20),
-                    (double)outFileSize/inFileSize*100)
+                    (double)outFileSize/(double)inFileSize*100)
         } else {
             DISPLAYUPDATE_PROGRESS(
                     "\rRead : %u / %u MB ==> %.2f%% ",
                     (unsigned)(inFileSize>>20), (unsigned)(srcFileSize>>20),
-                    (double)outFileSize/inFileSize*100);
+                    (double)outFileSize/(double)inFileSize*100);
     }   }
 
     while (1) {
@@ -1157,11 +1158,11 @@ FIO_compressLzmaFrame(cRess_t* ress,
         if (srcFileSize == UTIL_FILESIZE_UNKNOWN)
             DISPLAYUPDATE_PROGRESS("\rRead : %u MB ==> %.2f%%",
                             (unsigned)(inFileSize>>20),
-                            (double)outFileSize/inFileSize*100)
+                            (double)outFileSize/(double)inFileSize*100)
         else
             DISPLAYUPDATE_PROGRESS("\rRead : %u / %u MB ==> %.2f%%",
                             (unsigned)(inFileSize>>20), (unsigned)(srcFileSize>>20),
-                            (double)outFileSize/inFileSize*100);
+                            (double)outFileSize/(double)inFileSize*100);
         if (ret == LZMA_STREAM_END) break;
     }
 
@@ -1241,11 +1242,11 @@ FIO_compressLz4Frame(cRess_t* ress,
             if (srcFileSize == UTIL_FILESIZE_UNKNOWN) {
                 DISPLAYUPDATE_PROGRESS("\rRead : %u MB ==> %.2f%%",
                                 (unsigned)(inFileSize>>20),
-                                (double)outFileSize/inFileSize*100)
+                                (double)outFileSize/(double)inFileSize*100)
             } else {
                 DISPLAYUPDATE_PROGRESS("\rRead : %u / %u MB ==> %.2f%%",
                                 (unsigned)(inFileSize>>20), (unsigned)(srcFileSize>>20),
-                                (double)outFileSize/inFileSize*100);
+                                (double)outFileSize/(double)inFileSize*100);
             }
 
             /* Write Block */
@@ -1994,7 +1995,8 @@ static dRess_t FIO_createDResources(FIO_prefs_t* const prefs, const char* dictFi
     /* dictionary */
     {   void* dictBuffer;
         size_t const dictBufferSize = FIO_createDictBuffer(&dictBuffer, dictFileName, prefs);
-        CHECK( ZSTD_initDStream_usingDict(ress.dctx, dictBuffer, dictBufferSize) );
+        CHECK( ZSTD_DCtx_reset(ress.dctx, ZSTD_reset_session_only) );
+        CHECK( ZSTD_DCtx_loadDictionary(ress.dctx, dictBuffer, dictBufferSize) );
         free(dictBuffer);
     }
 
