@@ -17,6 +17,7 @@
 #include "fuzz_helpers.h"
 #include "zstd.h"
 #include "zdict.h"
+#include "matchfinder.h"
 
 const int kMinClevel = -3;
 const int kMaxClevel = 19;
@@ -70,6 +71,17 @@ ZSTD_parameters FUZZ_randomParams(size_t srcSize, FUZZ_dataProducer_t *producer)
     return params;
 }
 
+static void setExternalMatchFinderParams(ZSTD_CCtx *cctx, FUZZ_dataProducer_t *producer) {
+    ZSTD_registerExternalMatchFinder(
+        cctx,
+        NULL,
+        simpleExternalMatchFinder
+    );
+    setRand(cctx, ZSTD_c_enableMatchFinderFallback, 0, 1, producer);
+    FUZZ_ZASSERT(ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, 0));
+    FUZZ_ZASSERT(ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLongDistanceMatching, ZSTD_ps_disable));
+}
+
 void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer_t *producer)
 {
     ZSTD_compressionParameters cParams = FUZZ_randomCParams(srcSize, producer);
@@ -116,11 +128,19 @@ void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer
     setRand(cctx, ZSTD_c_deterministicRefPrefix, 0, 1, producer);
     setRand(cctx, ZSTD_c_prefetchCDictTables, 0, 2, producer);
     setRand(cctx, ZSTD_c_maxBlockSize, ZSTD_BLOCKSIZE_MAX_MIN, ZSTD_BLOCKSIZE_MAX, producer);
+    setRand(cctx, ZSTD_c_validateSequences, 0, 1, producer);
+    setRand(cctx, ZSTD_c_searchForExternalRepcodes, 0, 2, producer);
     if (FUZZ_dataProducer_uint32Range(producer, 0, 1) == 0) {
       setRand(cctx, ZSTD_c_srcSizeHint, ZSTD_SRCSIZEHINT_MIN, 2 * srcSize, producer);
     }
     if (FUZZ_dataProducer_uint32Range(producer, 0, 1) == 0) {
       setRand(cctx, ZSTD_c_targetCBlockSize, ZSTD_TARGETCBLOCKSIZE_MIN, ZSTD_TARGETCBLOCKSIZE_MAX, producer);
+    }
+
+    if (FUZZ_dataProducer_uint32Range(producer, 0, 10) == 1) {
+        setExternalMatchFinderParams(cctx, producer);
+    } else {
+        ZSTD_registerExternalMatchFinder(cctx, NULL, NULL);
     }
 }
 

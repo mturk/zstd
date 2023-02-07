@@ -85,18 +85,35 @@ def get_git_tags():
     return tags
 
 
-def create_dict(tag, dict_source_path):
+def dict_ok(tag, dict_name, sample):
+    if not os.path.isfile(dict_name):
+        return False
+    try:
+        cmd = ['./zstd.' + tag, '-D', dict_name]
+        with open(sample, "rb") as i:
+            subprocess.check_call(cmd, stdin=i, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except:
+        return False
+
+
+def create_dict(tag, dict_source_path, fallback_tag=None):
     dict_name = 'dict.' + tag
     if not os.path.isfile(dict_name):
         cFiles = glob.glob(dict_source_path + "/*.c")
         hFiles = glob.glob(dict_source_path + "/*.h")
+        # Ensure the dictionary builder is deterministic
+        files = sorted(cFiles + hFiles)
         if tag == 'v0.5.0':
-            result = execute('./dictBuilder.' + tag + ' ' + ' '.join(cFiles) + ' ' + ' '.join(hFiles) + ' -o ' + dict_name, print_output=False, param_shell=True)
+            result = execute('./dictBuilder.' + tag + ' ' + ' '.join(files) + ' -o ' + dict_name, print_output=False, param_shell=True)
         else:
-            result = execute('./zstd.' + tag + ' -f --train ' + ' '.join(cFiles) + ' ' + ' '.join(hFiles) + ' -o ' + dict_name, print_output=False, param_shell=True)
-        if result == 0:
+            result = execute('./zstd.' + tag + ' -f --train ' + ' '.join(files) + ' -o ' + dict_name, print_output=False, param_shell=True)
+        if result == 0 and dict_ok(tag, dict_name, files[0]):
             print(dict_name + ' created')
-            assert os.path.isfile(dict_name)
+        elif fallback_tag is not None:
+            fallback_dict_name = 'dict.' + fallback_tag
+            print('creating dictionary ' + dict_name + ' failed, falling back to ' + fallback_dict_name)
+            shutil.copy(fallback_dict_name, dict_name)
         else:
             raise RuntimeError('ERROR: creating of ' + dict_name + ' failed')
     else:
@@ -272,10 +289,11 @@ if __name__ == '__main__':
     print('Compress test.dat by all released zstd')
     print('-----------------------------------------------')
 
+    create_dict(head, dict_source_path)
     for tag in tags:
         print(tag)
         if tag >= 'v0.5.0':
-            create_dict(tag, dict_source_path)
+            create_dict(tag, dict_source_path, head)
             dict_compress_sample(tag, test_dat)
             remove_duplicates()
             decompress_dict(tag)

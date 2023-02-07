@@ -1566,6 +1566,27 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
     CHECK(!ZSTD_isError(ZSTD_CCtx_setParameter(zc, ZSTD_c_srcSizeHint, -1)), "Out of range doesn't error");
     DISPLAYLEVEL(3, "OK \n");
 
+    DISPLAYLEVEL(3, "test%3i : ZSTD_lazy compress with hashLog = 29 and searchLog = 4 : ", testNb++);
+    if (MEM_64bits()) {
+        ZSTD_outBuffer out = { compressedBuffer, compressedBufferSize, 0 };
+        ZSTD_inBuffer in = { CNBuffer, CNBufferSize, 0 };
+        CHECK_Z(ZSTD_CCtx_reset(zc, ZSTD_reset_session_and_parameters));
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_strategy, ZSTD_lazy));
+        /* Force enable the row based match finder */
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_useRowMatchFinder, ZSTD_ps_enable));
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_searchLog, 4));
+        /* Set windowLog to 29 so the hashLog doesn't get sized down */
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_windowLog, 29));
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_hashLog, 29));
+        CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_checksumFlag, 1));
+        /* Compress with continue first so the hashLog doesn't get sized down */
+        CHECK_Z(ZSTD_compressStream2(zc, &out, &in, ZSTD_e_continue));
+        CHECK_Z(ZSTD_compressStream2(zc, &out, &in, ZSTD_e_end));
+        cSize = out.pos;
+        CHECK_Z(ZSTD_decompress(decodedBuffer, CNBufferSize, compressedBuffer, cSize));
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
     DISPLAYLEVEL(3, "test%3i : Test offset == windowSize : ", testNb++);
     {
         int windowLog;
@@ -1852,48 +1873,61 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
          * check that the reference is preserved across compressions */
         ZSTD_registerExternalMatchFinder(zc, &externalMatchState, zstreamExternalMatchFinder);
 
-        for (enableFallback = 0; enableFallback < 1; enableFallback++) {
+        for (enableFallback = 0; enableFallback <= 1; enableFallback++) {
             size_t testCaseId;
+            size_t const numTestCases = 9;
 
-            EMF_testCase const EMF_successCases[] = {
+            EMF_testCase const testCases[] = {
                 EMF_ONE_BIG_SEQ,
                 EMF_LOTS_OF_SEQS,
-            };
-            size_t const EMF_numSuccessCases = 2;
-
-            EMF_testCase const EMF_failureCases[] = {
                 EMF_ZERO_SEQS,
                 EMF_BIG_ERROR,
                 EMF_SMALL_ERROR,
+                EMF_INVALID_OFFSET,
+                EMF_INVALID_MATCHLEN,
+                EMF_INVALID_LITLEN,
+                EMF_INVALID_LAST_LITS
             };
-            size_t const EMF_numFailureCases = 3;
 
-            /* Test external matchfinder success scenarios */
-            for (testCaseId = 0; testCaseId < EMF_numSuccessCases; testCaseId++) {
+            ZSTD_ErrorCode const errorCodes[] = {
+                ZSTD_error_no_error,
+                ZSTD_error_no_error,
+                ZSTD_error_externalMatchFinder_failed,
+                ZSTD_error_externalMatchFinder_failed,
+                ZSTD_error_externalMatchFinder_failed,
+                ZSTD_error_externalSequences_invalid,
+                ZSTD_error_externalSequences_invalid,
+                ZSTD_error_externalSequences_invalid,
+                ZSTD_error_externalSequences_invalid
+            };
+
+            for (testCaseId = 0; testCaseId < numTestCases; testCaseId++) {
                 size_t res;
-                externalMatchState = EMF_successCases[testCaseId];
+
+                int const compressionShouldSucceed = (
+                    (errorCodes[testCaseId] == ZSTD_error_no_error) ||
+                    (enableFallback && errorCodes[testCaseId] == ZSTD_error_externalMatchFinder_failed)
+                );
+
+                int const testWithSequenceValidation = (
+                    testCases[testCaseId] == EMF_INVALID_OFFSET
+                );
+
+                externalMatchState = testCases[testCaseId];
+
                 ZSTD_CCtx_reset(zc, ZSTD_reset_session_only);
+                CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_validateSequences, testWithSequenceValidation));
                 CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, enableFallback));
                 res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize);
-                CHECK(ZSTD_isError(res), "EMF: Compression error: %s", ZSTD_getErrorName(res));
-                CHECK_Z(ZSTD_decompress(checkBuf, checkBufSize, dstBuf, res));
-                CHECK(memcmp(CNBuffer, checkBuf, CNBufferSize) != 0, "EMF: Corruption!");
-            }
 
-            /* Test external matchfinder failure scenarios */
-            for (testCaseId = 0; testCaseId < EMF_numFailureCases; testCaseId++) {
-                size_t res;
-                externalMatchState = EMF_failureCases[testCaseId];
-                ZSTD_CCtx_reset(zc, ZSTD_reset_session_only);
-                CHECK_Z(ZSTD_CCtx_setParameter(zc, ZSTD_c_enableMatchFinderFallback, enableFallback));
-                res = ZSTD_compress2(zc, dstBuf, dstBufSize, CNBuffer, CNBufferSize);
-                if (enableFallback) {
+                if (compressionShouldSucceed) {
+                    CHECK(ZSTD_isError(res), "EMF: Compression error: %s", ZSTD_getErrorName(res));
                     CHECK_Z(ZSTD_decompress(checkBuf, checkBufSize, dstBuf, res));
                     CHECK(memcmp(CNBuffer, checkBuf, CNBufferSize) != 0, "EMF: Corruption!");
                 } else {
                     CHECK(!ZSTD_isError(res), "EMF: Should have raised an error!");
                     CHECK(
-                        ZSTD_getErrorCode(res) != ZSTD_error_externalMatchFinder_failed,
+                        ZSTD_getErrorCode(res) != errorCodes[testCaseId],
                         "EMF: Wrong error code: %s", ZSTD_getErrorName(res)
                     );
                 }
@@ -2063,6 +2097,201 @@ static int basicUnitTests(U32 seed, double compressibility, int bigTests)
             free(checkBuf);
         }
         ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+    /* Test Sequence Validation */
+    DISPLAYLEVEL(3, "test%3i : Testing sequence validation: ", testNb++);
+    {
+        ZSTD_CCtx* cctx = ZSTD_createCCtx();
+
+        /* Test minMatch >= 4, matchLength < 4 */
+        {
+            size_t srcSize = 11;
+            void* const src = CNBuffer;
+            size_t dstSize = ZSTD_compressBound(srcSize);
+            void* const dst = compressedBuffer;
+            size_t const kNbSequences = 4;
+            ZSTD_Sequence* sequences = malloc(sizeof(ZSTD_Sequence) * kNbSequences);
+
+            memset(src, 'x', srcSize);
+
+            sequences[0] = (ZSTD_Sequence) {1, 1, 3, 0};
+            sequences[1] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[2] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[3] = (ZSTD_Sequence) {0, 1, 0, 0};
+
+            /* Test with sequence validation */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_minMatch, 5));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, 1));
+
+            cSize = ZSTD_compressSequences(cctx, dst, dstSize,
+                                   sequences, kNbSequences,
+                                   src, srcSize);
+
+            CHECK(!ZSTD_isError(cSize), "Should throw an error"); /* maxNbSeq is too small and an assert will fail */
+            CHECK(ZSTD_getErrorCode(cSize) != ZSTD_error_externalSequences_invalid, "Wrong error code: %s", ZSTD_getErrorName(cSize)); /* fails sequence validation */
+
+            ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters);
+
+            /* Test without sequence validation */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_minMatch, 5));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, 0));
+
+            cSize = ZSTD_compressSequences(cctx, dst, dstSize,
+                                   sequences, kNbSequences,
+                                   src, srcSize);
+
+            CHECK(!ZSTD_isError(cSize), "Should throw an error"); /* maxNbSeq is too small and an assert will fail */
+            CHECK(ZSTD_getErrorCode(cSize) != ZSTD_error_externalSequences_invalid, "Wrong error code: %s", ZSTD_getErrorName(cSize)); /* fails sequence validation */
+
+            free(sequences);
+        }
+
+        ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters);
+
+
+        /* Test with no block delim */
+        {
+            size_t srcSize = 4;
+            void* const src = CNBuffer;
+            size_t dstSize = ZSTD_compressBound(srcSize);
+            void* const dst = compressedBuffer;
+            size_t const kNbSequences = 1;
+            ZSTD_Sequence* sequences = malloc(sizeof(ZSTD_Sequence) * kNbSequences);
+            void* const checkBuf = malloc(srcSize);
+
+            memset(src, 'x', srcSize);
+
+            sequences[0] = (ZSTD_Sequence) {1, 1, 3, 0};
+
+            /* Test with sequence validation */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_minMatch, 3));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_noBlockDelimiters));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, 1));
+
+            cSize = ZSTD_compressSequences(cctx, dst, dstSize,
+                                   sequences, kNbSequences,
+                                   src, srcSize);
+
+            CHECK(ZSTD_isError(cSize), "Should not throw an error");
+            CHECK_Z(ZSTD_decompress(checkBuf, srcSize, dst, cSize));
+            CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+
+            free(sequences);
+            free(checkBuf);
+        }
+
+        ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters);
+
+        { /* Test case with two additional sequences */
+            size_t srcSize = 19;
+            void* const src = CNBuffer;
+            size_t dstSize = ZSTD_compressBound(srcSize);
+            void* const dst = compressedBuffer;
+            size_t const kNbSequences = 7;
+            ZSTD_Sequence* sequences = malloc(sizeof(ZSTD_Sequence) * kNbSequences);
+
+            memset(src, 'x', srcSize);
+
+            sequences[0] = (ZSTD_Sequence) {1, 1, 3, 0};
+            sequences[1] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[2] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[3] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[4] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[5] = (ZSTD_Sequence) {1, 0, 3, 0};
+            sequences[6] = (ZSTD_Sequence) {0, 0, 0, 0};
+
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_minMatch, 5));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, 1));
+
+            cSize = ZSTD_compressSequences(cctx, dst, dstSize,
+                                   sequences, kNbSequences,
+                                   src, srcSize);
+
+            CHECK(!ZSTD_isError(cSize), "Should throw an error"); /* maxNbSeq is too small and an assert will fail */
+            CHECK(ZSTD_getErrorCode(cSize) != ZSTD_error_externalSequences_invalid, "Wrong error code: %s", ZSTD_getErrorName(cSize)); /* fails sequence validation */
+
+            ZSTD_CCtx_reset(cctx, ZSTD_reset_session_and_parameters);
+
+            /* Test without sequence validation */
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_minMatch, 5));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockDelimiters, ZSTD_sf_explicitBlockDelimiters));
+            CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_validateSequences, 0));
+
+            cSize = ZSTD_compressSequences(cctx, dst, dstSize,
+                                   sequences, kNbSequences,
+                                   src, srcSize);
+
+            CHECK(!ZSTD_isError(cSize), "Should throw an error"); /* maxNbSeq is too small and an assert will fail */
+            CHECK(ZSTD_getErrorCode(cSize) != ZSTD_error_externalSequences_invalid, "Wrong error code: %s", ZSTD_getErrorName(cSize)); /* fails sequence validation */
+
+            free(sequences);
+        }
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+
+
+    DISPLAYLEVEL(3, "test%3i : Testing large offset with small window size: ", testNb++);
+    {
+        ZSTD_CCtx* cctx = ZSTD_createCCtx();
+        ZSTD_DCtx* dctx = ZSTD_createDCtx();
+
+        /* Test large offset, small window size*/
+        {
+            size_t srcSize = 21;
+            void* const src = CNBuffer;
+            size_t dstSize = ZSTD_compressBound(srcSize);
+            void* const dst = compressedBuffer;
+            size_t const kNbSequences = 4;
+            ZSTD_Sequence* sequences = malloc(sizeof(ZSTD_Sequence) * kNbSequences);
+            void* const checkBuf = malloc(srcSize);
+            const size_t largeDictSize = 1 << 25;
+            ZSTD_CDict* cdict = NULL;
+            ZSTD_DDict* ddict = NULL;
+
+            /* Generate large dictionary */
+            void* dictBuffer = calloc(largeDictSize, 1);
+            ZSTD_compressionParameters cParams = ZSTD_getCParams(1, srcSize, largeDictSize);
+            cParams.minMatch = ZSTD_MINMATCH_MIN;
+            cParams.hashLog = ZSTD_HASHLOG_MIN;
+            cParams.chainLog = ZSTD_CHAINLOG_MIN;
+
+            cdict = ZSTD_createCDict_advanced(dictBuffer, largeDictSize, ZSTD_dlm_byRef, ZSTD_dct_rawContent, cParams, ZSTD_defaultCMem);
+            ddict = ZSTD_createDDict_advanced(dictBuffer, largeDictSize, ZSTD_dlm_byRef, ZSTD_dct_rawContent, ZSTD_defaultCMem);
+
+            ZSTD_CCtx_refCDict(cctx, cdict);
+            ZSTD_DCtx_refDDict(dctx, ddict);
+
+            sequences[0] = (ZSTD_Sequence) {3, 3, 3, 0};
+            sequences[1] = (ZSTD_Sequence) {1 << 25, 0, 3, 0};
+            sequences[2] = (ZSTD_Sequence) {1 << 25, 0, 9, 0};
+            sequences[3] = (ZSTD_Sequence) {3, 0, 3, 0};
+
+            cSize = ZSTD_compressSequences(cctx, dst, dstSize,
+                                   sequences, kNbSequences,
+                                   src, srcSize);
+
+            CHECK(ZSTD_isError(cSize), "Should not throw an error");
+
+            {
+                size_t dSize = ZSTD_decompressDCtx(dctx, checkBuf, srcSize, dst, cSize);
+                CHECK(ZSTD_isError(dSize), "Should not throw an error");
+                CHECK(memcmp(src, checkBuf, srcSize) != 0, "Corruption!");
+            }
+
+            free(sequences);
+            free(checkBuf);
+            free(dictBuffer);
+            ZSTD_freeCDict(cdict);
+            ZSTD_freeDDict(ddict);
+        }
+        ZSTD_freeCCtx(cctx);
+        ZSTD_freeDCtx(dctx);
     }
     DISPLAYLEVEL(3, "OK \n");
 
@@ -2733,6 +2962,9 @@ static int fuzzerTests_newAPI(U32 seed, int nbTests, int startTest,
         CHECK(badParameters(zc, savedParams), "CCtx params are wrong");
 
         /* multi - fragments decompression test */
+        if (FUZ_rand(&lseed) & 1) {
+            CHECK_Z(ZSTD_DCtx_reset(zd, ZSTD_reset_session_and_parameters));
+        }
         if (!dictSize /* don't reset if dictionary : could be different */ && (FUZ_rand(&lseed) & 1)) {
             DISPLAYLEVEL(5, "resetting DCtx (dict:%p) \n", (void const*)dict);
             CHECK_Z( ZSTD_resetDStream(zd) );
@@ -2740,6 +2972,9 @@ static int fuzzerTests_newAPI(U32 seed, int nbTests, int startTest,
             if (dictSize)
                 DISPLAYLEVEL(5, "using dictionary of size %zu \n", dictSize);
             CHECK_Z( ZSTD_initDStream_usingDict(zd, dict, dictSize) );
+        }
+        if (FUZ_rand(&lseed) & 1) {
+            CHECK_Z(ZSTD_DCtx_setParameter(zd, ZSTD_d_disableHuffmanAssembly, FUZ_rand(&lseed) & 1));
         }
         {   size_t decompressionResult = 1;
             ZSTD_inBuffer  inBuff = { cBuffer, cSize, 0 };
@@ -2782,7 +3017,14 @@ static int fuzzerTests_newAPI(U32 seed, int nbTests, int startTest,
         }   }
 
         /* try decompression on noisy data */
-        CHECK_Z( ZSTD_initDStream(zd_noise) );   /* note : no dictionary */
+        if (FUZ_rand(&lseed) & 1) {
+            CHECK_Z(ZSTD_DCtx_reset(zd_noise, ZSTD_reset_session_and_parameters));
+        } else {
+            CHECK_Z(ZSTD_DCtx_reset(zd_noise, ZSTD_reset_session_only));
+        }
+        if (FUZ_rand(&lseed) & 1) {
+            CHECK_Z(ZSTD_DCtx_setParameter(zd_noise, ZSTD_d_disableHuffmanAssembly, FUZ_rand(&lseed) & 1));
+        }
         {   ZSTD_inBuffer  inBuff = { cBuffer, cSize, 0 };
             ZSTD_outBuffer outBuff= { dstBuffer, dstBufferSize, 0 };
             while (outBuff.pos < dstBufferSize) {
@@ -2865,6 +3107,7 @@ int main(int argc, const char** argv)
 
             if (!strcmp(argument, "--newapi")) { selected_api=advanced_api; testNb += !testNb; continue; }
             if (!strcmp(argument, "--no-big-tests")) { bigTests=0; continue; }
+            if (!strcmp(argument, "--big-tests")) { bigTests=1; continue; }
 
             argument++;
             while (*argument!=0) {

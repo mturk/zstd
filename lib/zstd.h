@@ -14,7 +14,7 @@ extern "C" {
 #ifndef ZSTD_H_235446
 #define ZSTD_H_235446
 
-/* ======   Dependency   ======*/
+/* ======   Dependencies   ======*/
 #include <limits.h>   /* INT_MAX */
 #include <stddef.h>   /* size_t */
 
@@ -106,7 +106,7 @@ extern "C" {
 /*------   Version   ------*/
 #define ZSTD_VERSION_MAJOR    1
 #define ZSTD_VERSION_MINOR    5
-#define ZSTD_VERSION_RELEASE  3
+#define ZSTD_VERSION_RELEASE  4
 #define ZSTD_VERSION_NUMBER  (ZSTD_VERSION_MAJOR *100*100 + ZSTD_VERSION_MINOR *100 + ZSTD_VERSION_RELEASE)
 
 /*! ZSTD_versionNumber() :
@@ -501,7 +501,8 @@ typedef enum {
      ZSTD_c_experimentalParam15=1012,
      ZSTD_c_experimentalParam16=1013,
      ZSTD_c_experimentalParam17=1014,
-     ZSTD_c_experimentalParam18=1015
+     ZSTD_c_experimentalParam18=1015,
+     ZSTD_c_experimentalParam19=1016
 } ZSTD_cParameter;
 
 typedef struct {
@@ -614,13 +615,15 @@ typedef enum {
      * ZSTD_d_stableOutBuffer
      * ZSTD_d_forceIgnoreChecksum
      * ZSTD_d_refMultipleDDicts
+     * ZSTD_d_disableHuffmanAssembly
      * Because they are not stable, it's necessary to define ZSTD_STATIC_LINKING_ONLY to access them.
      * note : never ever use experimentalParam? names directly
      */
      ZSTD_d_experimentalParam1=1000,
      ZSTD_d_experimentalParam2=1001,
      ZSTD_d_experimentalParam3=1002,
-     ZSTD_d_experimentalParam4=1003
+     ZSTD_d_experimentalParam4=1003,
+     ZSTD_d_experimentalParam5=1004
 
 } ZSTD_dParameter;
 
@@ -799,8 +802,6 @@ ZSTDLIB_API size_t ZSTD_CStreamOutSize(void);   /**< recommended size for output
  * This following is a legacy streaming API, available since v1.0+ .
  * It can be replaced by ZSTD_CCtx_reset() and ZSTD_compressStream2().
  * It is redundant, but remains fully supported.
- * Streaming in combination with advanced parameters and dictionary compression
- * can only be used through the new API.
  ******************************************************************************/
 
 /*!
@@ -809,6 +810,9 @@ ZSTDLIB_API size_t ZSTD_CStreamOutSize(void);   /**< recommended size for output
  *     ZSTD_CCtx_reset(zcs, ZSTD_reset_session_only);
  *     ZSTD_CCtx_refCDict(zcs, NULL); // clear the dictionary (if any)
  *     ZSTD_CCtx_setParameter(zcs, ZSTD_c_compressionLevel, compressionLevel);
+ *
+ * Note that ZSTD_initCStream() clears any previously set dictionary. Use the new API
+ * to compress with a dictionary.
  */
 ZSTDLIB_API size_t ZSTD_initCStream(ZSTD_CStream* zcs, int compressionLevel);
 /*!
@@ -1620,8 +1624,11 @@ ZSTDLIB_API unsigned ZSTD_isSkippableFrame(const void* buffer, size_t size);
  *  and ZSTD_estimateCCtxSize_usingCCtxParams(), which can be used in tandem with ZSTD_CCtxParams_setParameter().
  *  Both can be used to estimate memory using custom compression parameters and arbitrary srcSize limits.
  *
- *  Note 2 : only single-threaded compression is supported.
+ *  Note : only single-threaded compression is supported.
  *  ZSTD_estimateCCtxSize_usingCCtxParams() will return an error code if ZSTD_c_nbWorkers is >= 1.
+ *
+ *  Note 2 : ZSTD_estimateCCtxSize* functions are not compatible with the external matchfinder API at this time.
+ *  Size estimates assume that no external matchfinder is registered.
  */
 ZSTDLIB_STATIC_API size_t ZSTD_estimateCCtxSize(int compressionLevel);
 ZSTDLIB_STATIC_API size_t ZSTD_estimateCCtxSize_usingCParams(ZSTD_compressionParameters cParams);
@@ -1640,7 +1647,12 @@ ZSTDLIB_STATIC_API size_t ZSTD_estimateDCtxSize(void);
  *  or deducted from a valid frame Header, using ZSTD_estimateDStreamSize_fromFrame();
  *  Note : if streaming is init with function ZSTD_init?Stream_usingDict(),
  *         an internal ?Dict will be created, which additional size is not estimated here.
- *         In this case, get total size by adding ZSTD_estimate?DictSize */
+ *         In this case, get total size by adding ZSTD_estimate?DictSize
+ *  Note 2 : only single-threaded compression is supported.
+ *  ZSTD_estimateCStreamSize_usingCCtxParams() will return an error code if ZSTD_c_nbWorkers is >= 1.
+ *  Note 3 : ZSTD_estimateCStreamSize* functions are not compatible with the external matchfinder API at this time.
+ *  Size estimates assume that no external matchfinder is registered.
+ */
 ZSTDLIB_STATIC_API size_t ZSTD_estimateCStreamSize(int compressionLevel);
 ZSTDLIB_STATIC_API size_t ZSTD_estimateCStreamSize_usingCParams(ZSTD_compressionParameters cParams);
 ZSTDLIB_STATIC_API size_t ZSTD_estimateCStreamSize_usingCCtxParams(const ZSTD_CCtx_params* params);
@@ -2115,17 +2127,40 @@ ZSTDLIB_STATIC_API size_t ZSTD_CCtx_refPrefix_advanced(ZSTD_CCtx* cctx, const vo
  * documentation (below) before setting this parameter. */
 #define ZSTD_c_enableMatchFinderFallback ZSTD_c_experimentalParam17
 
-/*  ZSTD_c_maxBlockSize
- *  Allowed values are between 1KB and ZSTD_BLOCKSIZE_MAX (128KB).
- *  The default is ZSTD_BLOCKSIZE_MAX, and setting to 0 will set to the default.
+/* ZSTD_c_maxBlockSize
+ * Allowed values are between 1KB and ZSTD_BLOCKSIZE_MAX (128KB).
+ * The default is ZSTD_BLOCKSIZE_MAX, and setting to 0 will set to the default.
  *
- *  This parameter can be used to set an upper bound on the blocksize
- *  that overrides the default ZSTD_BLOCKSIZE_MAX. It cannot be used to set upper
- *  bounds greater than ZSTD_BLOCKSIZE_MAX or bounds lower than 1KB (will make
- *  compressBound() innacurate). Only currently meant to be used for testing.
+ * This parameter can be used to set an upper bound on the blocksize
+ * that overrides the default ZSTD_BLOCKSIZE_MAX. It cannot be used to set upper
+ * bounds greater than ZSTD_BLOCKSIZE_MAX or bounds lower than 1KB (will make
+ * compressBound() innacurate). Only currently meant to be used for testing.
  *
  */
 #define ZSTD_c_maxBlockSize ZSTD_c_experimentalParam18
+
+/* ZSTD_c_searchForExternalRepcodes
+ * This parameter affects how zstd parses external sequences, such as sequences
+ * provided through the compressSequences() API or from an external matchfinder.
+ *
+ * If set to ZSTD_ps_enable, the library will check for repeated offsets in
+ * external sequences, even if those repcodes are not explicitly indicated in
+ * the "rep" field. Note that this is the only way to exploit repcode matches
+ * while using compressSequences() or an external matchfinder, since zstd
+ * currently ignores the "rep" field of external sequences.
+ *
+ * If set to ZSTD_ps_disable, the library will not exploit repeated offsets in
+ * external sequences, regardless of whether the "rep" field has been set. This
+ * reduces sequence compression overhead by about 25% while sacrificing some
+ * compression ratio.
+ *
+ * The default value is ZSTD_ps_auto, for which the library will enable/disable
+ * based on compression level.
+ *
+ * Note: for now, this param only has an effect if ZSTD_c_blockDelimiters is
+ * set to ZSTD_sf_explicitBlockDelimiters. That may change in the future.
+ */
+#define ZSTD_c_searchForExternalRepcodes ZSTD_c_experimentalParam19
 
 /*! ZSTD_CCtx_getParameter() :
  *  Get the requested compression parameter value, selected by enum ZSTD_cParameter,
@@ -2335,6 +2370,17 @@ ZSTDLIB_STATIC_API size_t ZSTD_DCtx_getParameter(ZSTD_DCtx* dctx, ZSTD_dParamete
  * memory management of the underlying ZSTD_DDict* themselves.
  */
 #define ZSTD_d_refMultipleDDicts ZSTD_d_experimentalParam4
+
+/* ZSTD_d_disableHuffmanAssembly
+ * Set to 1 to disable the Huffman assembly implementation.
+ * The default value is 0, which allows zstd to use the Huffman assembly
+ * implementation if available.
+ *
+ * This parameter can be used to disable Huffman assembly at runtime.
+ * If you want to disable it at compile time you can define the macro
+ * ZSTD_DISABLE_ASM.
+ */
+#define ZSTD_d_disableHuffmanAssembly ZSTD_d_experimentalParam5
 
 
 /*! ZSTD_DCtx_setFormat() :
