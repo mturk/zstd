@@ -559,6 +559,66 @@ static void test_setCParams(unsigned tnb)
     DISPLAYLEVEL(3, "OK \n");
 }
 
+static void test_blockSplitter_incompressibleExpansionProtection(unsigned testNb, unsigned seed)
+{
+    DISPLAYLEVEL(3, "test%3i : Check block splitter doesn't oversplit incompressible data (seed %u): ", testNb, seed);
+    {   ZSTD_CCtx* cctx = ZSTD_createCCtx();
+        size_t const srcSize = 256 * 1024; /* needs to be at least 2 blocks */
+        void* incompressible = malloc(srcSize);
+        size_t const dstCapacity = ZSTD_compressBound(srcSize);
+        void* cBuffer = malloc(dstCapacity);
+        size_t const chunkSize = 8 KB;
+        size_t const nbChunks = srcSize / chunkSize;
+        size_t chunkNb, cSizeNoSplit, cSizeWithSplit;
+        assert(cctx != NULL);
+        assert(incompressible != NULL);
+        assert(cBuffer != NULL);
+
+        /* let's fill input with random noise (incompressible) */
+        RDG_genBuffer(incompressible, srcSize, 0.0, 0.0, seed);
+
+        /* this pattern targets the fastest _byChunk variant's sampling (level 3).
+         * manually checked that, without the @savings protection, it would over-split.
+         */
+        for (chunkNb=0; chunkNb<nbChunks; chunkNb++) {
+            BYTE* const p = (BYTE*)incompressible + chunkNb * chunkSize;
+            size_t const samplingRate = 43;
+            int addOrRemove = chunkNb % 2;
+            size_t n;
+            for (n=0; n<chunkSize; n+=samplingRate) {
+                if (addOrRemove) {
+                    p[n] &= 0x80;
+                } else {
+                    p[n] |= 0x80;
+                }
+            }
+        }
+
+        /* run first without splitting */
+        ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockSplitterLevel, 1 /* no split */);
+        cSizeNoSplit = ZSTD_compress2(cctx, cBuffer, dstCapacity, incompressible, srcSize);
+
+        /* run with sample43 splitter, check it's still the same */
+        ZSTD_CCtx_setParameter(cctx, ZSTD_c_blockSplitterLevel, 3 /* sample43, fastest _byChunk variant */);
+        cSizeWithSplit = ZSTD_compress2(cctx, cBuffer, dstCapacity, incompressible, srcSize);
+
+        if (cSizeWithSplit != cSizeNoSplit) {
+            DISPLAYLEVEL(1, "invalid compressed size: cSizeWithSplit %u != %u cSizeNoSplit \n",
+                    (unsigned)cSizeWithSplit, (unsigned)cSizeNoSplit);
+            abort();
+        }
+        DISPLAYLEVEL(4, "compressed size: cSizeWithSplit %u == %u cSizeNoSplit : ",
+                (unsigned)cSizeWithSplit, (unsigned)cSizeNoSplit);
+
+        free(incompressible);
+        free(cBuffer);
+        ZSTD_freeCCtx(cctx);
+    }
+    DISPLAYLEVEL(3, "OK \n");
+}
+
+/* ============================================================= */
+
 static int basicUnitTests(U32 const seed, double compressibility)
 {
     size_t const CNBuffSize = 5 MB;
@@ -1360,7 +1420,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
 
         CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 19));
         CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_minMatch, 7));
-        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_useBlockSplitter, ZSTD_ps_enable));
+        CHECK_Z(ZSTD_CCtx_setParameter(cctx, ZSTD_c_splitAfterSequences, ZSTD_ps_enable));
 
         cSize = ZSTD_compress2(cctx, compressedBuffer, compressedBufferSize, data, srcSize);
         CHECK_Z(cSize);
@@ -1373,6 +1433,8 @@ static int basicUnitTests(U32 const seed, double compressibility)
         ZSTD_freeCCtx(cctx);
     }
     DISPLAYLEVEL(3, "OK \n");
+
+    test_blockSplitter_incompressibleExpansionProtection(testNb++, seed);
 
     DISPLAYLEVEL(3, "test%3d : superblock uncompressible data: too many nocompress superblocks : ", testNb++);
     {
@@ -1675,8 +1737,8 @@ static int basicUnitTests(U32 const seed, double compressibility)
     {   ZSTD_CCtx* const cctx = ZSTD_createCCtx();
         int value;
         ZSTD_compressionParameters cparams = ZSTD_getCParams(1, 0, 0);
-        cparams.strategy = -1;
-        /* Set invalid cParams == no change. */
+        cparams.strategy = (ZSTD_strategy)-1; /* set invalid value, on purpose */
+        /* Set invalid cParams == error out, and no change. */
         CHECK(ZSTD_isError(ZSTD_CCtx_setCParams(cctx, cparams)));
 
         CHECK_Z(ZSTD_CCtx_getParameter(cctx, ZSTD_c_windowLog, &value));
@@ -1739,12 +1801,12 @@ static int basicUnitTests(U32 const seed, double compressibility)
         ZSTD_freeCCtx(cctx);
     }
 
-    DISPLAYLEVEL(3, "test%3d : ZSTD_CCtx_setCarams() : ", testNb++);
+    DISPLAYLEVEL(3, "test%3d : ZSTD_CCtx_setParams() : ", testNb++);
     {   ZSTD_CCtx* const cctx = ZSTD_createCCtx();
         int value;
         ZSTD_parameters params = ZSTD_getParams(1, 0, 0);
-        params.cParams.strategy = -1;
-        /* Set invalid params == no change. */
+        params.cParams.strategy = (ZSTD_strategy)-1; /* set invalid value, on purpose */
+        /* Set invalid params == error out, and no change. */
         CHECK(ZSTD_isError(ZSTD_CCtx_setParams(cctx, params)));
 
         CHECK_Z(ZSTD_CCtx_getParameter(cctx, ZSTD_c_windowLog, &value));
@@ -2190,7 +2252,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
 
     DISPLAYLEVEL(3, "test%3i : compress with block splitting : ", testNb++)
     {   ZSTD_CCtx* cctx = ZSTD_createCCtx();
-        CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_useBlockSplitter, ZSTD_ps_enable) );
+        CHECK_Z( ZSTD_CCtx_setParameter(cctx, ZSTD_c_splitAfterSequences, ZSTD_ps_enable) );
         cSize = ZSTD_compress2(cctx, compressedBuffer, compressedBufferSize, CNBuffer, CNBuffSize);
         CHECK_Z(cSize);
         ZSTD_freeCCtx(cctx);
@@ -2450,7 +2512,7 @@ static int basicUnitTests(U32 const seed, double compressibility)
                                                  3742, 3675, 3674, 3665, 3664,
                                                  3663, 3662, 3661, 3660, 3660,
                                                  3660, 3660, 3660 };
-            size_t const target_wdict_cSize[22+1] =  { 2830, 2896, 2893, 2820, 2940,
+            size_t const target_wdict_cSize[22+1] =  { 2830, 2896, 2893, 2840, 2950,
                                                        2950, 2950, 2925, 2900, 2892,
                                                        2910, 2910, 2910, 2780, 2775,
                                                        2765, 2760, 2755, 2754, 2753,
@@ -3653,16 +3715,19 @@ static int basicUnitTests(U32 const seed, double compressibility)
         ZSTD_freeDCtx(dctx);
     }
 
-    /* long rle test */
+    /* rle detection test: must compress better blocks with a single identical byte repeated */
     {   size_t sampleSize = 0;
-        size_t expectedCompressedSize = 39; /* block 1, 2: compressed, block 3: RLE, zstd 1.4.4 */
-        DISPLAYLEVEL(3, "test%3i : Long RLE test : ", testNb++);
-        memset((char*)CNBuffer+sampleSize, 'B', 256 KB - 1);
-        sampleSize += 256 KB - 1;
-        memset((char*)CNBuffer+sampleSize, 'A', 96 KB);
-        sampleSize += 96 KB;
+        size_t maxCompressedSize = 46; /* block 1, 2: compressed, block 3: RLE, zstd 1.4.4 */
+        DISPLAYLEVEL(3, "test%3i : RLE detection test : ", testNb++);
+        memset((char*)CNBuffer+sampleSize, 'B', 256 KB - 2);
+        sampleSize += 256 KB - 2;
+        memset((char*)CNBuffer+sampleSize, 'A', 100 KB);
+        sampleSize += 100 KB;
         cSize = ZSTD_compress(compressedBuffer, ZSTD_compressBound(sampleSize), CNBuffer, sampleSize, 1);
-        if (ZSTD_isError(cSize) || cSize > expectedCompressedSize) goto _output_error;
+        if (ZSTD_isError(cSize) || cSize > maxCompressedSize) {
+            DISPLAYLEVEL(4, "error: cSize %u > %u expected ! \n", (unsigned)cSize, (unsigned)maxCompressedSize);
+            goto _output_error;
+        }
         { CHECK_NEWV(regenSize, ZSTD_decompress(decodedBuffer, sampleSize, compressedBuffer, cSize));
           if (regenSize!=sampleSize) goto _output_error; }
         DISPLAYLEVEL(3, "OK \n");

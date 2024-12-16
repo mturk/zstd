@@ -24,6 +24,7 @@
 #  include "zstdmt_compress.h"
 #endif
 #include "../common/bits.h" /* ZSTD_highbit32, ZSTD_NbCommonBytes */
+#include "zstd_preSplit.h" /* ZSTD_SLIPBLOCK_WORKSPACESIZE */
 
 #if defined (__cplusplus)
 extern "C" {
@@ -342,8 +343,21 @@ struct ZSTD_CCtx_params_s {
     ZSTD_sequenceFormat_e blockDelimiters;
     int validateSequences;
 
-    /* Block splitting */
-    ZSTD_paramSwitch_e useBlockSplitter;
+    /* Block splitting
+     * @postBlockSplitter executes split analysis after sequences are produced,
+     * it's more accurate but consumes more resources.
+     * @preBlockSplitter_level splits before knowing sequences,
+     * it's more approximative but also cheaper.
+     * Valid @preBlockSplitter_level values range from 0 to 6 (included).
+     * 0 means auto, 1 means do not split,
+     * then levels are sorted in increasing cpu budget, from 2 (fastest) to 6 (slowest).
+     * Highest @preBlockSplitter_level combines well with @postBlockSplitter.
+     */
+    ZSTD_paramSwitch_e postBlockSplitter;
+    int preBlockSplitter_level;
+
+    /* Adjust the max block size*/
+    size_t maxBlockSize;
 
     /* Param for deciding whether to use row-based matchfinder */
     ZSTD_paramSwitch_e useRowMatchFinder;
@@ -367,15 +381,13 @@ struct ZSTD_CCtx_params_s {
     void* extSeqProdState;
     ZSTD_sequenceProducer_F extSeqProdFunc;
 
-    /* Adjust the max block size*/
-    size_t maxBlockSize;
-
     /* Controls repcode search in external sequence parsing */
     ZSTD_paramSwitch_e searchForExternalRepcodes;
 };  /* typedef'd to ZSTD_CCtx_params within "zstd.h" */
 
 #define COMPRESS_SEQUENCES_WORKSPACE_SIZE (sizeof(unsigned) * (MaxSeq + 2))
 #define ENTROPY_WORKSPACE_SIZE (HUF_WORKSPACE_SIZE + COMPRESS_SEQUENCES_WORKSPACE_SIZE)
+#define TMP_WORKSPACE_SIZE (MAX(ENTROPY_WORKSPACE_SIZE, ZSTD_SLIPBLOCK_WORKSPACESIZE))
 
 /**
  * Indicates whether this compression proceeds directly from user-provided
@@ -432,7 +444,8 @@ struct ZSTD_CCtx_s {
     size_t maxNbLdmSequences;
     rawSeqStore_t externSeqStore; /* Mutable reference to external sequences */
     ZSTD_blockState_t blockState;
-    U32* entropyWorkspace;  /* entropy workspace of ENTROPY_WORKSPACE_SIZE bytes */
+    void* tmpWorkspace;  /* used as substitute of stack space - must be aligned for S64 type */
+    size_t tmpWkspSize;
 
     /* Whether we are streaming or not */
     ZSTD_buffered_policy_e bufferedPolicy;
@@ -555,6 +568,25 @@ MEM_STATIC int ZSTD_cParam_withinBounds(ZSTD_cParameter cParam, int value)
     if (value < bounds.lowerBound) return 0;
     if (value > bounds.upperBound) return 0;
     return 1;
+}
+
+/* ZSTD_selectAddr:
+ * @return index >= lowLimit ? candidate : backup,
+ * tries to force branchless codegen. */
+MEM_STATIC const BYTE*
+ZSTD_selectAddr(U32 index, U32 lowLimit, const BYTE* candidate, const BYTE* backup)
+{
+#if defined(__GNUC__) && defined(__x86_64__)
+    __asm__ (
+        "cmp %1, %2\n"
+        "cmova %3, %0\n"
+        : "+r"(candidate)
+        : "r"(index), "r"(lowLimit), "r"(backup)
+        );
+    return candidate;
+#else
+    return index >= lowLimit ? candidate : backup;
+#endif
 }
 
 /* ZSTD_noCompressBlock() :
@@ -779,8 +811,8 @@ ZSTD_count_2segments(const BYTE* ip, const BYTE* match,
     size_t const matchLength = ZSTD_count(ip, match, vEnd);
     if (match + matchLength != mEnd) return matchLength;
     DEBUGLOG(7, "ZSTD_count_2segments: found a 2-parts match (current length==%zu)", matchLength);
-    DEBUGLOG(7, "distance from match beginning to end dictionary = %zi", mEnd - match);
-    DEBUGLOG(7, "distance from current pos to end buffer = %zi", iEnd - ip);
+    DEBUGLOG(7, "distance from match beginning to end dictionary = %i", (int)(mEnd - match));
+    DEBUGLOG(7, "distance from current pos to end buffer = %i", (int)(iEnd - ip));
     DEBUGLOG(7, "next byte : ip==%02X, istart==%02X", ip[matchLength], *iStart);
     DEBUGLOG(7, "final match length = %zu", matchLength + ZSTD_count(ip+matchLength, iStart, iEnd));
     return matchLength + ZSTD_count(ip+matchLength, iStart, iEnd);
